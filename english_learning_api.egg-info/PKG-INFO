@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: english-learning-api
+Version: 0.1.0
+Summary: FastAPI service for the English Learning App
+Requires-Python: >=3.12
+Requires-Dist: alembic<2.0,>=1.13
+Requires-Dist: bcrypt<5.0,>=4.1
+Requires-Dist: email-validator<3.0,>=2.1
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: PyJWT<3.0,>=2.8
+Requires-Dist: uvicorn[standard]<1.0,>=0.30
+Requires-Dist: sqlalchemy<3.0,>=2.0
+Requires-Dist: asyncpg<1.0,>=0.29
+Requires-Dist: redis<6.0,>=5.0
+Requires-Dist: pydantic-settings<3.0,>=2.3
+Requires-Dist: python-multipart<1.0,>=0.0.9
