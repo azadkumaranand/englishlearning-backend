@@ -4,7 +4,6 @@ import asyncio
 
 from app.db.session import AsyncSessionLocal, close_engine
 from app.services.topic_service import seed_topics
-from app.services.redis import close_redis
 
 
 async def _seed() -> None:
@@ -13,7 +12,6 @@ async def _seed() -> None:
             seeded_count = await seed_topics(session)
         print(f"Seeded {seeded_count} topics")
     finally:
-        await close_redis()
         await close_engine()
 
 

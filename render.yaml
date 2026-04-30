@@ -15,8 +15,6 @@ services:
         generateValue: true
       - key: DATABASE_URL
         sync: false
-      - key: REDIS_URL
-        sync: false
       - key: LLM_API_KEY
         sync: false
       - key: STT_API_KEY

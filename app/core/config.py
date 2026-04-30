@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,7 +40,6 @@ class Settings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://english_user:english_password@127.0.0.1:5432/english_learning"
     )
-    redis_url: str = "redis://127.0.0.1:6379/0"
     api_host: str = "127.0.0.1"
     api_port: int = 8000
 
@@ -49,9 +49,15 @@ class Settings(BaseSettings):
         if not isinstance(value, str):
             return value
         if value.startswith("postgres://"):
-            return f"postgresql+asyncpg://{value[len('postgres://') :]}"
-        if value.startswith("postgresql://"):
-            return f"postgresql+asyncpg://{value[len('postgresql://') :]}"
+            value = f"postgresql+asyncpg://{value[len('postgres://') :]}"
+        elif value.startswith("postgresql://"):
+            value = f"postgresql+asyncpg://{value[len('postgresql://') :]}"
+        if ".supabase.co" in value:
+            parsed = urlparse(value)
+            query_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if "ssl" not in query_params and "sslmode" not in query_params:
+                query_params["ssl"] = "require"
+                return urlunparse(parsed._replace(query=urlencode(query_params)))
         return value
 
     model_config = SettingsConfigDict(

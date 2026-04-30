@@ -6,15 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.core.config import get_settings
 from app.db.session import close_engine
-from app.services.redis import close_redis, init_redis
 
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     application.state.settings = get_settings()
-    await init_redis()
     yield
-    await close_redis()
     await close_engine()
 
 
