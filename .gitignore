@@ -1,0 +1,14 @@
+.env
+.DS_Store
+node_modules/
+.expo/
+dist/
+build/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+.uv-cache/
+apps
