@@ -1,14 +1,37 @@
-.env
-.DS_Store
-node_modules/
-.expo/
-dist/
-build/
+# Python
 __pycache__/
-*.pyc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
 .venv/
-.uv-cache/
-apps
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Build
+build/
+dist/
+*.egg-info/
+
+# Environment variables
+.env
+.env.*

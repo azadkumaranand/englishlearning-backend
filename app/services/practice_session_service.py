@@ -11,16 +11,71 @@ from sqlalchemy.orm import selectinload
 
 from app.models.practice_message import PracticeMessage
 from app.models.practice_session import PracticeSession
+from app.models.practice_translation_item import PracticeTranslationItem
 from app.models.topic import Topic
 from app.models.user import User
 from app.schemas.practice_message import PracticeMessageCreateRequest
-from app.schemas.practice_session import PracticeSessionCreateRequest
+from app.schemas.practice_session import (
+    PracticeSessionCompletionSummaryResponse,
+    PracticeSessionCreateRequest,
+)
+from app.schemas.progress import ProgressRecommendedPracticeResponse
 from app.services.personalization_service import get_personalization_summary
 from app.services.session_starter_service import generate_session_starter
+from app.services.user_learning_profile_service import (
+    get_or_create_user_learning_profile,
+    learning_area_label,
+    normalize_learning_area,
+)
 
 
 def _session_not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Practice session not found")
+
+
+def _top_area_label(area_counts: dict | None) -> str | None:
+    if not area_counts:
+        return None
+    sorted_items = sorted(
+        ((normalize_learning_area(str(key)), int(value or 0)) for key, value in area_counts.items()),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+    for area, count in sorted_items:
+        if area and count > 0:
+            return learning_area_label(area)
+    return None
+
+
+def _recommended_next_practice(
+    *,
+    recommended_focus_area: str | None,
+    repeated_mistakes_count: int,
+    average_translation_score: int,
+    average_conversation_score: int,
+    practice_preference: str | None,
+) -> ProgressRecommendedPracticeResponse:
+    focus_area = normalize_learning_area(recommended_focus_area)
+    focus_label = learning_area_label(focus_area).lower() if focus_area else ""
+
+    if repeated_mistakes_count > 0 and focus_area:
+        return ProgressRecommendedPracticeResponse(
+            type="mistake_review",
+            title=f"Review {focus_label} mistakes",
+        )
+
+    if practice_preference == "speaking" or (
+        average_conversation_score > 0 and average_conversation_score < max(average_translation_score, 70)
+    ):
+        return ProgressRecommendedPracticeResponse(
+            type="roleplay_speaking",
+            title="Start a roleplay speaking session",
+        )
+
+    return ProgressRecommendedPracticeResponse(
+        type="translation_practice",
+        title=f"Practice {focus_label}" if focus_area else "Start translation practice",
+    )
 
 
 async def create_practice_session(
@@ -133,6 +188,64 @@ async def complete_practice_session(
     await session.commit()
     await session.refresh(practice_session)
     return await get_user_practice_session(session, user_id, session_id, include_messages=True)
+
+
+async def build_practice_session_completion_summary(
+    session: AsyncSession,
+    *,
+    practice_session: PracticeSession,
+    auto_completed: bool,
+    completed_items: int | None = None,
+) -> PracticeSessionCompletionSummaryResponse:
+    profile = await get_or_create_user_learning_profile(
+        session,
+        user_id=practice_session.user_id,
+        preferred_level=practice_session.user.english_level if practice_session.user else None,
+    )
+
+    if completed_items is None and practice_session.mode == "translation_practice":
+        result = await session.execute(
+            select(func.count(PracticeTranslationItem.id)).where(
+                PracticeTranslationItem.session_id == practice_session.id,
+                PracticeTranslationItem.status == "completed",
+            )
+        )
+        completed_items = int(result.scalar_one() or 0)
+
+    focus_area = normalize_learning_area(profile.recommended_focus_area)
+    focus_label = learning_area_label(focus_area) if focus_area else None
+    strongest_area = _top_area_label(profile.strong_areas_json)
+    repeated_mistakes_count = len(
+        [item for item in list(profile.repeated_mistakes_json or []) if int(item.get("count", 1) or 1) >= 2]
+    )
+    recommended_next_practice = _recommended_next_practice(
+        recommended_focus_area=profile.recommended_focus_area,
+        repeated_mistakes_count=repeated_mistakes_count,
+        average_translation_score=int(round(profile.average_score or 0)),
+        average_conversation_score=int(round(profile.average_conversation_score or 0)),
+        practice_preference=practice_session.user.practice_preference if practice_session.user else None,
+    )
+
+    if practice_session.mode == "translation_practice":
+        title = "Nice work"
+        message = (
+            f"You completed {completed_items or 0} translation items."
+            + (f" Next, focus on {focus_label.lower()}." if focus_label else " Keep building clear English sentences.")
+        )
+    else:
+        title = "Session complete"
+        message = "You finished this practice session. Keep the momentum going with your next personalized activity."
+
+    return PracticeSessionCompletionSummaryResponse(
+        title=title,
+        message=message,
+        completed_items=completed_items or 0,
+        average_score=int(round(profile.average_score or 0)) if (profile.total_attempts or 0) > 0 else None,
+        strongest_area=strongest_area,
+        focus_area=focus_label,
+        recommended_next_practice=recommended_next_practice,
+        auto_completed=auto_completed,
+    )
 
 
 async def add_practice_message(

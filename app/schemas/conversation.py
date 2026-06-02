@@ -36,6 +36,12 @@ class ConversationStartResponse(BaseModel):
     max_turns: int
 
 
+class ConversationSessionStateResponse(BaseModel):
+    session_id: uuid.UUID
+    status: str
+    completed_at: datetime | None = None
+
+
 class ConversationMistakeResponse(BaseModel):
     type: ConversationMistakeType
     issue: str
@@ -69,6 +75,22 @@ class ConversationReplyResponse(BaseModel):
     session_completed: bool
     remaining_turns: int
     summary: ConversationSummaryResponse | None = None
+
+
+class ConversationVoiceTranscriptionMetadata(BaseModel):
+    provider: str
+    model: str
+    mime_type: str | None = None
+    duration_ms: int | None = None
+    source: str | None = None
+    language: str | None = None
+    file_name: str | None = None
+
+
+class ConversationVoiceReplyResponse(BaseModel):
+    transcript: str
+    result: ConversationReplyResponse
+    transcription: ConversationVoiceTranscriptionMetadata
 
 
 class ConversationMessageResponse(BaseModel):

@@ -36,7 +36,12 @@ from app.services.personalization_service import (
     record_completed_translation_item,
     try_update_personalization_after_correction,
 )
-from app.services.practice_session_service import create_practice_message, get_user_practice_session
+from app.services.practice_session_service import (
+    build_practice_session_completion_summary,
+    complete_practice_session,
+    create_practice_message,
+    get_user_practice_session,
+)
 from app.services.recommendation_service import build_focus_recommendation
 from app.services.user_learning_profile_service import (
     get_or_create_user_learning_profile,
@@ -59,6 +64,7 @@ from app.prompts.translation_prompt import (
 
 logger = logging.getLogger(__name__)
 _TRANSLATION_PROMPT_ATTEMPTS = 3
+_AUTO_COMPLETE_TRANSLATION_ITEMS = 3
 
 
 @dataclass(slots=True)
@@ -1577,13 +1583,39 @@ async def _build_next_translation_message(
     )
 
 
+async def _build_translation_completion_message(
+    session: AsyncSession,
+    *,
+    practice_session: PracticeSession,
+    completed_items: int,
+    focus_label: str | None,
+) -> PracticeMessage:
+    focus_sentence = (
+        f" Your next focus is {focus_label.lower()}."
+        if focus_label
+        else " Keep building clear and natural English sentences."
+    )
+    return await create_practice_message(
+        session=session,
+        practice_session=practice_session,
+        role="assistant",
+        content=f"Excellent work. You completed {completed_items} translation items in this session.{focus_sentence}",
+        metadata_json={
+            "practice_kind": "session_completion",
+            "is_session_completion": True,
+            "completed_items": completed_items,
+            "focus_label": focus_label,
+        },
+    )
+
+
 async def handle_translation_practice_turn(
     session: AsyncSession,
     *,
     practice_session: PracticeSession,
     content: str,
     user_message_metadata: dict[str, Any] | None = None,
-) -> tuple[PracticeMessage, PracticeMessage, MessageCorrection | None]:
+) -> tuple[PracticeMessage, PracticeMessage, MessageCorrection | None, Any | None]:
     loaded_session, _, _, _, _, _ = await _load_translation_context(
         session,
         practice_session=practice_session,
@@ -1627,7 +1659,7 @@ async def handle_translation_practice_turn(
             learner_level=learner_level,
             user_message_metadata=user_message_metadata,
         )
-        return user_message, assistant_message, None
+        return user_message, assistant_message, None, None
 
     system_prompt = build_translation_evaluation_prompt(
         english_level=learner_level,
@@ -1726,6 +1758,38 @@ async def handle_translation_practice_turn(
             session,
             practice_session=loaded_session,
         )
+        completed_source_sentences = await list_completed_translation_source_sentences(
+            session,
+            session_id=loaded_session_id,
+        )
+        completed_items = len(completed_source_sentences)
+        if completed_items >= _AUTO_COMPLETE_TRANSLATION_ITEMS:
+            completed_session = await complete_practice_session(
+                session=session,
+                user_id=session_user_id,
+                session_id=loaded_session_id,
+            )
+            completed_session = await get_user_practice_session(
+                session=session,
+                user_id=session_user_id,
+                session_id=loaded_session_id,
+                include_messages=True,
+                include_user_context=True,
+            )
+            completion_summary = await build_practice_session_completion_summary(
+                session=session,
+                practice_session=completed_session,
+                auto_completed=True,
+                completed_items=completed_items,
+            )
+            assistant_message = await _build_translation_completion_message(
+                session=session,
+                practice_session=completed_session,
+                completed_items=completed_items,
+                focus_label=completion_summary.focus_area,
+            )
+            return user_message, assistant_message, correction, completion_summary
+
         assistant_message = await _build_next_translation_message(
             session=session,
             practice_session=refreshed_session,
@@ -1752,4 +1816,4 @@ async def handle_translation_practice_turn(
             ),
         )
 
-    return user_message, assistant_message, correction
+    return user_message, assistant_message, correction, None

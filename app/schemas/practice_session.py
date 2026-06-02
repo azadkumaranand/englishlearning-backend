@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.practice_message import PracticeMessageResponse
+from app.schemas.progress import ProgressRecommendedPracticeResponse
 from app.schemas.topic import TopicResponse
 
 PracticeMode = Literal[
@@ -49,6 +50,18 @@ class PracticeSessionStarterResponse(BaseModel):
     is_fresh: bool = True
 
 
+class PracticeSessionCompletionSummaryResponse(BaseModel):
+    title: str
+    message: str
+    completed_items: int = 0
+    average_score: int | None = None
+    strongest_area: str | None = None
+    focus_area: str | None = None
+    recommended_next_practice: ProgressRecommendedPracticeResponse
+    auto_completed: bool = False
+
+
 class PracticeSessionDetailResponse(PracticeSessionListItemResponse):
     messages: list[PracticeMessageResponse]
     starter: PracticeSessionStarterResponse | None = None
+    completion_summary: PracticeSessionCompletionSummaryResponse | None = None

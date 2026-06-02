@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 import uuid
+from typing import Any
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
@@ -15,6 +17,7 @@ from app.services.ai_provider import (
     AIProviderParseError,
     AIProviderResponseError,
     generate_ai_reply,
+    stream_ai_reply,
     generate_structured_json,
 )
 from app.services.correction_service import try_generate_message_correction
@@ -65,7 +68,7 @@ async def chat_in_practice_session(
     session_id: uuid.UUID,
     content: str,
     user_message_metadata: dict | None = None,
-) -> tuple[PracticeMessage, PracticeMessage, MessageCorrection | None]:
+) -> tuple[PracticeMessage, PracticeMessage, MessageCorrection | None, Any | None]:
     practice_session = await get_user_practice_session(
         session=session,
         user_id=user_id,
@@ -154,4 +157,159 @@ async def chat_in_practice_session(
         else None
     )
 
-    return user_message, assistant_message, correction
+    return user_message, assistant_message, correction, None
+
+
+async def stream_chat_in_practice_session(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    content: str,
+    user_message_metadata: dict | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    practice_session = await get_user_practice_session(
+        session=session,
+        user_id=user_id,
+        session_id=session_id,
+        include_messages=True,
+        include_user_context=True,
+    )
+    if practice_session.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Practice session is not active",
+        )
+
+    if practice_session.mode == "translation_practice":
+        yield {
+            "type": "status",
+            "phase": "received",
+            "message": "Checking your translation...",
+        }
+        yield {
+            "type": "status",
+            "phase": "evaluating",
+            "message": "Reviewing grammar and meaning...",
+        }
+        user_message, assistant_message, correction, completion_summary = await handle_translation_practice_turn(
+            session=session,
+            practice_session=practice_session,
+            content=content,
+            user_message_metadata=user_message_metadata,
+        )
+        yield {
+            "type": "final",
+            "session_id": session_id,
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+            "correction": correction,
+            "completion_summary": completion_summary,
+        }
+        return
+
+    user_message = await create_practice_message(
+        session=session,
+        practice_session=practice_session,
+        role="user",
+        content=content,
+        metadata_json=user_message_metadata,
+    )
+    recent_messages = await list_recent_practice_messages(session, session_id=session_id)
+    serialized_history = _serialize_history(recent_messages)
+    learning_summary = await get_personalization_summary(session, user_id=user_id)
+    system_prompt = build_conversation_prompt(
+        user=practice_session.user,
+        learning_profile=practice_session.user.learning_profile,
+        practice_session=practice_session,
+        history=recent_messages,
+        learning_summary=learning_summary,
+    )
+
+    try:
+        assistant_metadata: dict | None
+        should_generate_correction = True
+        if practice_session.mode == "free_chat":
+            yield {
+                "type": "status",
+                "phase": "replying",
+                "message": "Preparing a reply in the same language...",
+            }
+            free_chat_reply, assistant_metadata = await _generate_free_chat_reply(
+                system_prompt=system_prompt,
+                conversation=serialized_history,
+            )
+            assistant_content = free_chat_reply.reply
+            should_generate_correction = free_chat_reply.should_correct_english
+        else:
+            yield {
+                "type": "status",
+                "phase": "replying",
+                "message": "Coach is typing...",
+            }
+            assistant_content = ""
+            provider_name: str | None = None
+            model_name: str | None = None
+            response_id: str | None = None
+            async for provider_event in stream_ai_reply(
+                system_prompt=system_prompt,
+                conversation=serialized_history,
+            ):
+                if hasattr(provider_event, "delta"):
+                    assistant_content = provider_event.snapshot
+                    yield {
+                        "type": "assistant_delta",
+                        "delta": provider_event.delta,
+                        "snapshot": provider_event.snapshot,
+                    }
+                else:
+                    assistant_content = provider_event.content
+                    provider_name = provider_event.provider
+                    model_name = provider_event.model
+                    response_id = provider_event.response_id
+            assistant_metadata = {
+                "provider": provider_name,
+                "model": model_name,
+                "response_id": response_id,
+            }
+    except (AIProviderConfigurationError, AIProviderResponseError, AIProviderParseError, ValidationError) as exc:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_502_BAD_GATEWAY
+                if isinstance(exc, (AIProviderResponseError, AIProviderParseError, ValidationError))
+                else status.HTTP_503_SERVICE_UNAVAILABLE
+            ),
+            detail=str(exc),
+        ) from exc
+
+    if should_generate_correction:
+        yield {
+            "type": "status",
+            "phase": "feedback",
+            "message": "Preparing your feedback...",
+        }
+
+    assistant_message = await create_practice_message(
+        session=session,
+        practice_session=practice_session,
+        role="assistant",
+        content=assistant_content,
+        metadata_json=assistant_metadata,
+    )
+    correction = (
+        await try_generate_message_correction(
+            session=session,
+            practice_session=practice_session,
+            user_message=user_message,
+        )
+        if should_generate_correction
+        else None
+    )
+    yield {
+        "type": "final",
+        "session_id": session_id,
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+        "correction": correction,
+        "completion_summary": None,
+    }

@@ -12,6 +12,7 @@ from app.schemas.practice_message import PracticeMessageCreateRequest, PracticeM
 from app.schemas.practice_session import (
     PracticeMode,
     PracticeSessionCreateRequest,
+    PracticeSessionCompletionSummaryResponse,
     PracticeSessionDetailResponse,
     PracticeSessionListItemResponse,
     PracticeSessionStarterResponse,
@@ -19,6 +20,7 @@ from app.schemas.practice_session import (
 )
 from app.services.practice_session_service import (
     add_practice_message,
+    build_practice_session_completion_summary,
     complete_practice_session,
     create_practice_session,
     ensure_practice_session_starter,
@@ -61,9 +63,18 @@ def _extract_session_starter(practice_session) -> PracticeSessionStarterResponse
     return None
 
 
-def _serialize_session_detail(practice_session) -> PracticeSessionDetailResponse:
+def _serialize_session_detail(
+    practice_session,
+    *,
+    completion_summary: PracticeSessionCompletionSummaryResponse | None = None,
+) -> PracticeSessionDetailResponse:
     detail = PracticeSessionDetailResponse.model_validate(practice_session)
-    return detail.model_copy(update={"starter": _extract_session_starter(practice_session)})
+    return detail.model_copy(
+        update={
+            "starter": _extract_session_starter(practice_session),
+            "completion_summary": completion_summary,
+        }
+    )
 
 
 @router.post("", response_model=PracticeSessionDetailResponse, status_code=status.HTTP_201_CREATED)
@@ -150,7 +161,19 @@ async def complete_session(
     session: AsyncSession = Depends(get_db_session),
 ) -> PracticeSessionDetailResponse:
     practice_session = await complete_practice_session(session, current_user.id, session_id)
-    return _serialize_session_detail(practice_session)
+    practice_session = await get_user_practice_session(
+        session=session,
+        user_id=current_user.id,
+        session_id=session_id,
+        include_messages=True,
+        include_user_context=True,
+    )
+    completion_summary = await build_practice_session_completion_summary(
+        session=session,
+        practice_session=practice_session,
+        auto_completed=False,
+    )
+    return _serialize_session_detail(practice_session, completion_summary=completion_summary)
 
 
 @router.post(

@@ -13,12 +13,16 @@ from sqlalchemy.orm import selectinload
 from app.models.conversation_message import ConversationMessage
 from app.models.conversation_session import ConversationSession
 from app.models.user import User
-from app.prompts.conversation_roleplay_prompt import build_conversation_roleplay_evaluation_prompt
+from app.prompts.conversation_roleplay_prompt import (
+    build_conversation_roleplay_evaluation_prompt,
+    scenario_topic_sequence,
+)
 from app.schemas.conversation import (
     ConversationFeedbackLevel,
     ConversationReplyRequest,
     ConversationReplyResponse,
     ConversationScenario,
+    ConversationSessionStateResponse,
     ConversationStartResponse,
     ConversationSummaryResponse,
 )
@@ -54,6 +58,10 @@ class ConversationReplyAnalysis(BaseModel):
     best_area: str = Field(min_length=1)
     weak_area: str = Field(min_length=1)
     tip: str = Field(min_length=1)
+    conversation_stage: str = Field(min_length=1)
+    next_question_goal: str = Field(min_length=1)
+    covered_topics: list[str] = Field(default_factory=list)
+    should_wrap_up: bool = False
 
 
 class ScenarioConfig(BaseModel):
@@ -183,7 +191,56 @@ def _fallback_analysis(*, opener: str, level: str) -> ConversationReplyAnalysis:
         best_area="confidence",
         weak_area="grammar",
         tip="Focus on complete sentences with a clear verb.",
+        conversation_stage="warmup",
+        next_question_goal="clearer complete answer",
+        covered_topics=[],
+        should_wrap_up=False,
     )
+
+
+def _conversation_stage(turn_number: int, max_turns: int) -> str:
+    if turn_number <= 1:
+        return "opener"
+    if turn_number >= max_turns:
+        return "wrap_up"
+    if turn_number == max_turns - 1:
+        return "situational"
+    if turn_number <= 2:
+        return "warmup"
+    return "deepening"
+
+
+def _extract_completed_goals(messages: list[ConversationMessage]) -> list[str]:
+    goals: list[str] = []
+    for message in messages:
+        if message.role != "ai" or not message.feedback_json:
+            continue
+        goal = message.feedback_json.get("next_question_goal")
+        if isinstance(goal, str) and goal.strip():
+            goals.append(goal.strip())
+    return goals
+
+
+def _extract_covered_topics(messages: list[ConversationMessage]) -> list[str]:
+    topics: list[str] = []
+    for message in messages:
+        if not message.feedback_json:
+            continue
+        topic_values = message.feedback_json.get("covered_topics")
+        if not isinstance(topic_values, list):
+            continue
+        for value in topic_values:
+            if isinstance(value, str) and value.strip():
+                topics.append(value.strip())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for topic in topics:
+        normalized = topic.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(topic)
+    return deduped
 
 
 def _conversation_json_schema() -> dict[str, Any]:
@@ -221,6 +278,16 @@ def _conversation_json_schema() -> dict[str, Any]:
             "best_area": {"type": "string"},
             "weak_area": {"type": "string"},
             "tip": {"type": "string"},
+            "conversation_stage": {
+                "type": "string",
+                "enum": ["opener", "warmup", "deepening", "situational", "wrap_up"],
+            },
+            "next_question_goal": {"type": "string"},
+            "covered_topics": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "should_wrap_up": {"type": "boolean"},
         },
         "required": [
             "score",
@@ -234,6 +301,10 @@ def _conversation_json_schema() -> dict[str, Any]:
             "best_area",
             "weak_area",
             "tip",
+            "conversation_stage",
+            "next_question_goal",
+            "covered_topics",
+            "should_wrap_up",
         ],
     }
 
@@ -381,13 +452,26 @@ async def reply_in_conversation_session(
     next_turn_number = conversation_session.current_turn + 1
 
     history = _serialize_conversation_history(conversation_session.messages or [])
+    topic_sequence = scenario_topic_sequence(conversation_session.scenario)
+    completed_goals = _extract_completed_goals(conversation_session.messages or [])
+    covered_topics = _extract_covered_topics(conversation_session.messages or [])
+    recent_ai_questions = [
+        message.message
+        for message in (conversation_session.messages or [])
+        if message.role == "ai"
+    ]
     system_prompt = build_conversation_roleplay_evaluation_prompt(
+        scenario_key=conversation_session.scenario,
         scenario_title=config.title,
         scenario_goal=config.goal,
         level=level,
         turn_number=next_turn_number,
         max_turns=conversation_session.max_turns,
         conversation_history=history,
+        topic_sequence=topic_sequence,
+        completed_goals=completed_goals,
+        covered_topics=covered_topics,
+        recent_ai_questions=recent_ai_questions,
         recommended_focus_area=normalize_learning_area(learning_profile.recommended_focus_area),
         learning_goal=user.learning_goal,
     )
@@ -427,6 +511,8 @@ async def reply_in_conversation_session(
             "best_area": analysis.best_area,
             "weak_area": analysis.weak_area,
             "tip": analysis.tip,
+            "conversation_stage": _conversation_stage(next_turn_number, conversation_session.max_turns),
+            "covered_topics": covered_topics,
         },
     )
 
@@ -438,7 +524,13 @@ async def reply_in_conversation_session(
         conversation_session=conversation_session,
         role="ai",
         message=analysis.ai_reply,
-        feedback_json={"scenario": conversation_session.scenario},
+        feedback_json={
+            "scenario": conversation_session.scenario,
+            "conversation_stage": analysis.conversation_stage,
+            "next_question_goal": analysis.next_question_goal,
+            "covered_topics": analysis.covered_topics,
+            "should_wrap_up": analysis.should_wrap_up,
+        },
     )
 
     conversation_session.current_turn = next_turn_number
@@ -484,4 +576,28 @@ async def reply_in_conversation_session(
         session_completed=session_completed,
         remaining_turns=remaining_turns,
         summary=summary,
+    )
+
+
+async def exit_conversation_session(
+    session: AsyncSession,
+    *,
+    user: User,
+    session_id: uuid.UUID,
+) -> ConversationSessionStateResponse:
+    conversation_session = await _get_user_conversation_session(
+        session,
+        user_id=user.id,
+        session_id=session_id,
+        include_messages=False,
+    )
+    if conversation_session.status == "active":
+        conversation_session.status = "abandoned"
+        conversation_session.completed_at = datetime.now(timezone.utc)
+        await session.commit()
+
+    return ConversationSessionStateResponse(
+        session_id=conversation_session.id,
+        status=conversation_session.status,
+        completed_at=conversation_session.completed_at,
     )

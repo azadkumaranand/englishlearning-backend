@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.correction import MessageCorrectionResponse
 from app.schemas.practice_message import PracticeMessageResponse
+from app.schemas.practice_session import PracticeSessionCompletionSummaryResponse
 
 
 class ChatRequest(BaseModel):
@@ -21,6 +22,7 @@ class ChatResponse(BaseModel):
     user_message: PracticeMessageResponse
     assistant_message: PracticeMessageResponse
     correction: MessageCorrectionResponse | None = None
+    completion_summary: PracticeSessionCompletionSummaryResponse | None = None
 
 
 class VoiceTranscriptionMetadata(BaseModel):
