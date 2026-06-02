@@ -1,50 +1,63 @@
-# Welcome to your Expo app 👋
+# Mobile App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+React Native Expo client for the English Learning App.
 
-## Get started
+## Features wired to the real backend
 
-1. Install dependencies
+- signup and login
+- token persistence with secure storage
+- onboarding persistence
+- topic browsing
+- practice session creation
+- AI chat
+- correction feedback rendering
 
-   ```bash
-   npm install
-   ```
+## Environment
 
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+Create a local env file:
 
 ```bash
-npm run reset-project
+cp .env.example .env
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Set the backend base URL:
 
-## Learn more
+```env
+EXPO_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+Use a host that your target can reach:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+- iOS simulator: `http://127.0.0.1:8000`
+- Android emulator: `http://10.0.2.2:8000`
+- physical device: your machine LAN IP, for example `http://192.168.1.20:8000`
 
-## Join the community
+## Run
 
-Join our community of developers creating universal apps.
+From `apps/mobileapp`:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+```bash
+npm install
+npm run start
+```
+
+Optional targets:
+
+```bash
+npm run android
+npm run ios
+npm run web
+```
+
+## Backend requirements
+
+Start the backend from the monorepo root:
+
+```bash
+cd /home/azad/ddev/learning/englearning/english-learning-app
+docker compose up -d
+uv run --project services/api alembic -c services/api/alembic.ini upgrade head
+uv run --project services/api uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+The backend now enables CORS through `BACKEND_CORS_ORIGINS`, which defaults to `*` in development.
